@@ -11,8 +11,10 @@ namespace Bedrock.Framework.Kafka.Internal.Interop
             byte* pTraverse = (byte*)ptr;
 
             while (*pTraverse != 0)
+            {
                 pTraverse += 1;
-
+            }
+            
             return (int)(pTraverse - (byte*)ptr);
         }
 
