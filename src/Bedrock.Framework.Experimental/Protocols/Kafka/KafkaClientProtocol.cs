@@ -1,23 +1,21 @@
 using System.Threading;
 using System.Threading.Tasks;
-using Bedrock.Framework.Protocols.Kafka.Messaging;
-using Bedrock.Framework.Protocols.Kafka.Messaging.SchemaTypes;
 using Microsoft.AspNetCore.Connections;
 
 namespace Bedrock.Framework.Protocols.Kafka
 {
     public class KafkaClientProtocol
     {
-        private readonly KafkaClientConnectionContext _connectionContext;
+        private readonly IKafkaClientConnectionContext _connectionContext;
         
-        public KafkaClientProtocol(ConnectionContext connectionContext)
+        public KafkaClientProtocol(IKafkaClientConnectionContext connectionContext)
         {
-            _connectionContext = new KafkaClientConnectionContext(connectionContext);
+            _connectionContext = connectionContext;
         }
 
-        public async Task StartAsync(CancellationToken cancellationToken = default)
+        public Task StartAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
         {
-            _ = _connectionContext.StartAsync(cancellationToken);
+            return _connectionContext.StartAsync(connectionContext, cancellationToken);
         }
     }
 }

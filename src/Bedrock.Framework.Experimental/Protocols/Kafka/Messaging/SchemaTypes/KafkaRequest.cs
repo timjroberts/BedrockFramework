@@ -1,19 +1,20 @@
 using System;
+using System.Buffers;
 
 namespace Bedrock.Framework.Protocols.Kafka.Messaging.SchemaTypes
 {
     public struct KafkaRequest
     {
-        public int Size;
+        public int CorrelationId;
+
+        public string ClientId;
 
         public ApiKey ApiKey;
 
         public short ApiVersion;
 
-        public short CorrelationId;
+        public IKafkaMessageWriter RequestWriter;
 
-        public string ClientId;
-
-        public Memory<byte> RequestMessage;
+        public object RequestMessage;
     }
 }
