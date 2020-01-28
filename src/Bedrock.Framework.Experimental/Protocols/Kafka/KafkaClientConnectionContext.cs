@@ -1,48 +1,17 @@
-using System.Buffers;
 using System.Diagnostics;
 using System.Collections.Concurrent;
 using System;
 using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
-using Bedrock.Framework.Protocols.Kafka.Messaging.SchemaTypes;
 using Microsoft.AspNetCore.Connections;
 using Bedrock.Framework.Protocols.Kafka.Messaging;
+using Bedrock.Framework.Protocols.Kafka.Utils;
 
 namespace Bedrock.Framework.Protocols.Kafka
 {
     /// <summary>
-    /// Encapsulates a client Kafka connection.
-    /// </summary>
-    public interface IKafkaClientConnectionContext
-    {
-        /// <summary>
-        /// Starts the client connection.
-        /// </summary>
-        /// <param name="connectionContext">The underlying connection.</param>
-        /// <param name="cancellationToken">A <see cref="CancellationToken"/> used to cancel the start operation.</param>
-        /// <returns>A <see cref="Task"/> that will complete once the client connection has started.</returns>
-        Task StartAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default);
-
-        /// <summary>
-        /// Serializes and sends a request through the underlying connection and waits for the response.
-        /// </summary>
-        /// <typeparam name="TRequestSchema">The request schema type.</typeparam>
-        /// <typeparam name="TResponseSchema">The response schema tyoe.</typeparam>
-        /// <param name="request">The request to send.</param>
-        /// <param name="messageDescriptor">Provides context for how the request and response should be written and
-        /// read from the underlying connection.</param>
-        /// <param name="cancellationToken">A <see cref="CancellationToken"/> used to cancel the send operation.</param>
-        /// <returns>A <see cref="Task"/> that will complete with the response for <paramref name="request"/>. If the
-        /// send operation results in an exception then the Task will complete with the exception.</returns>
-        Task<TResponseSchema> SendAsync<TRequestSchema, TResponseSchema>(
-            TRequestSchema request,
-            IKafkaMessageDescriptor messageDescriptor,
-            CancellationToken cancellationToken = default);
-    }
-
-    /// <summary>
-    /// Encapsulates a client Kafka connection that channels requests to the underlying connection
+    /// Encapsulates a client Kafka connection that channels requests to an underlying connection
     /// in the order that they were written; and reads responses in the same order.
     /// </summary>
     public class KafkaClientConnectionContext : IKafkaClientConnectionContext
@@ -63,12 +32,20 @@ namespace Bedrock.Framework.Protocols.Kafka
 
         private int _correlationId = 0;
 
+        /// <summary>
+        /// Initializes a new <see cref="KafkaClientConnectionContext"/>.
+        /// </summary>
+        /// <param name="requestWriter">An <see cref="IMessageWriter{KafkaRequest}"/> that can write Kafka requests to
+        /// a buffer.</param>
+        /// <param name="responseReader">An <see cref="IMessageReader{KafkaResponse}"/> that can read Kafka responses from
+        /// a buffer.</param>
         public KafkaClientConnectionContext(IMessageWriter<KafkaRequest> requestWriter, IMessageReader<KafkaResponse> responseReader)
         {
             _requestWriter = requestWriter;
             _responseReader = responseReader;
         }
 
+        /// <inheritdoc/>
         public Task StartAsync(ConnectionContext connectionContext, CancellationToken cancellationToken = default)
         {
             _ = WriteRequestsAsync(connectionContext, cancellationToken);
@@ -77,6 +54,7 @@ namespace Bedrock.Framework.Protocols.Kafka
             return Task.CompletedTask;
         }
 
+        /// <inheritdoc/>
         public async Task<TResponseSchema> SendAsync<TRequestSchema, TResponseSchema>(
             TRequestSchema request,
             IKafkaMessageDescriptor messageDescriptor,
@@ -97,22 +75,17 @@ namespace Bedrock.Framework.Protocols.Kafka
             {
                 if (_requestChannel.Reader.TryRead(out (object request, IKafkaMessageDescriptor messageDescriptor, TaskCompletionSource<object> tcs) request))
                 {
+                    var bufferWriter = new MemoryBufferWriter<byte>();
                     var correlationId = ++_correlationId;
+                    var requestWriter = request.messageDescriptor.GetRequestWriter();
 
                     _requestQueue.Enqueue((correlationId, request.messageDescriptor, request.tcs));
 
-                    await writer.WriteAsync(
-                        _requestWriter,
-                        new KafkaRequest()
-                        {
-                            CorrelationId = correlationId,
-                            ClientId = string.Empty,
-                            ApiKey = request.messageDescriptor.ApiKey,
-                            ApiVersion = request.messageDescriptor.ApiVersion,
-                            RequestWriter = request.messageDescriptor.GetRequestWriter(),
-                            RequestMessage = request.request
-                        },
-                        cancellationToken);
+                    requestWriter.WriteMessage(request, bufferWriter);
+
+                    using var kafkaRequest = new KafkaRequest(bufferWriter, request.messageDescriptor.ApiKey, request.messageDescriptor.ApiVersion, correlationId);
+
+                    await writer.WriteAsync(_requestWriter, kafkaRequest, cancellationToken);
                 }
             }
         }
@@ -128,16 +101,16 @@ namespace Bedrock.Framework.Protocols.Kafka
                 if (result.IsCompleted)
                     break;
 
+                using var kafkaResponse = result.Message;
+
                 var hasRequestInFlight = _requestQueue.TryDequeue(
                     out (int correlationId, IKafkaMessageDescriptor messageDescriptor, TaskCompletionSource<object> tcs) inflightRequestContext);
 
                 Debug.Assert(hasRequestInFlight, "Protocol Error: received unexpected message from server.");
 
-                var response = result.Message;
-
                 try
                 {
-                    if (response.CorrelationId != inflightRequestContext.correlationId)
+                    if (kafkaResponse.CorrelationId != inflightRequestContext.correlationId)
                     {
                         inflightRequestContext.tcs.SetException(new Exception("Protocol Exception: correlation ID mis-match."));
 
@@ -146,11 +119,10 @@ namespace Bedrock.Framework.Protocols.Kafka
 
                     var responseReader = inflightRequestContext.messageDescriptor.GetResponseReader();
 
-                    inflightRequestContext.tcs.SetResult(responseReader.ReadMessage(new ReadOnlySequence<byte>(response.ResponseMessage.Memory)));
+                    inflightRequestContext.tcs.SetResult(responseReader.ReadMessage(kafkaResponse.ResponseMessage));
                 }
                 finally
                 {
-                    response.ResponseMessage.Dispose();
                     reader.Advance();
                 }
             }

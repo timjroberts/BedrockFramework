@@ -5,7 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
-namespace Bedrock.Framework.Protocols.Kafka.Messaging
+namespace Bedrock.Framework.Protocols.Kafka.Utils
 {
     /// <summary>
     /// Manages a sequence of elements, readily castable as a <see cref="ReadOnlySequence{T}"/>.

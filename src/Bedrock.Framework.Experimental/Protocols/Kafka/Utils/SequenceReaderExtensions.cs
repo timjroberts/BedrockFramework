@@ -3,7 +3,7 @@ using System.Buffers;
 using System.Diagnostics;
 using System.Text;
 
-namespace Bedrock.Framework.Protocols.Kafka.Messaging
+namespace Bedrock.Framework.Protocols.Kafka.Utils
 {
     public static class SequenceReaderExtensions
     {

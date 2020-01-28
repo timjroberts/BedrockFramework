@@ -1,11 +1,17 @@
 using System;
 using System.Buffers;
-using Bedrock.Framework.Protocols.Kafka.Messaging.SchemaTypes;
+using Bedrock.Framework.Protocols.Kafka.Utils;
 
 namespace Bedrock.Framework.Protocols.Kafka.Messaging
 {
-    public class KafkaResponseReader : IMessageReader<KafkaResponse>
+    public class KafkaResponseReaderWriter : IMessageWriter<KafkaResponse>, IMessageReader<KafkaResponse>
     {
+        public void WriteMessage(KafkaResponse message, IBufferWriter<byte> output)
+        {
+            // This will require implementation when the server protocol is implemented
+            throw new NotImplementedException();
+        }
+        
         public bool TryParseMessage(in ReadOnlySequence<byte> input, ref SequencePosition consumed, ref SequencePosition examined, out KafkaResponse message)
         {
             var reader = new SequenceReader<byte>(input);
@@ -24,16 +30,12 @@ namespace Bedrock.Framework.Protocols.Kafka.Messaging
             // Adjust size to remove the bytes occupied by the correlationId
             size -= sizeof(short);
 
-            var memory = MemoryPool<byte>.Shared.Rent(size);
+            var bufferWriter = new MemoryBufferWriter<byte>();
             var messageSpan = input.Slice(reader.Position, size);
 
-            messageSpan.CopyTo(memory.Memory.Span);
+            messageSpan.CopyTo(bufferWriter.GetSpan(size));
 
-            message = new KafkaResponse()
-            {
-                CorrelationId = correlationId,
-                ResponseMessage = memory
-            };
+            message = new KafkaResponse(bufferWriter, correlationId);
 
             consumed = examined = messageSpan.End;
 

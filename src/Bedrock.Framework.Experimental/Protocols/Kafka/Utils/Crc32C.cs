@@ -1,7 +1,7 @@
 using System;
 using System.Buffers;
 
-namespace Bedrock.Framework.Protocols.Kafka.Messaging
+namespace Bedrock.Framework.Protocols.Kafka.Utils
 {
     public static class Crc32C
     {
