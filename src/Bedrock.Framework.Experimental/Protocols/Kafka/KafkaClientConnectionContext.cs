@@ -16,16 +16,15 @@ namespace Bedrock.Framework.Protocols.Kafka
     /// </summary>
     public class KafkaClientConnectionContext : IKafkaClientConnectionContext
     {
-        private readonly Channel<(object, IKafkaMessageDescriptor, TaskCompletionSource<object>)> _requestChannel =
-            Channel.CreateUnbounded<(object, IKafkaMessageDescriptor, TaskCompletionSource<object>)>(
+        private readonly Channel<RequestContext<object>> _requestChannel =
+            Channel.CreateUnbounded<RequestContext<object>>(
                 new UnboundedChannelOptions()
                 {
                     SingleReader = true,
                     SingleWriter = false
                 });
 
-        private readonly ConcurrentQueue<(int, IKafkaMessageDescriptor, TaskCompletionSource<object>)> _requestQueue =
-            new ConcurrentQueue<(int, IKafkaMessageDescriptor, TaskCompletionSource<object>)>();
+        private readonly ConcurrentQueue<RequestContext<int>> _requestQueue = new ConcurrentQueue<RequestContext<int>>();
 
         private readonly IMessageWriter<KafkaRequest> _requestWriter;
         private readonly IMessageReader<KafkaResponse> _responseReader;
@@ -62,7 +61,7 @@ namespace Bedrock.Framework.Protocols.Kafka
         {
             var tcs = new TaskCompletionSource<object>();
 
-            _requestChannel.Writer.TryWrite((request, messageDescriptor, tcs));
+            _requestChannel.Writer.TryWrite(new RequestContext<object>(request, messageDescriptor, tcs));
 
             return (TResponseSchema)await tcs.Task;
         }
@@ -71,22 +70,19 @@ namespace Bedrock.Framework.Protocols.Kafka
         {
             var writer = connectionContext.CreateWriter();
 
-            while (await _requestChannel.Reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
+            await foreach (RequestContext<object> request in _requestChannel.Reader.ReadAllAsync(cancellationToken))
             {
-                if (_requestChannel.Reader.TryRead(out (object request, IKafkaMessageDescriptor messageDescriptor, TaskCompletionSource<object> tcs) request))
-                {
-                    var bufferWriter = new MemoryBufferWriter<byte>();
-                    var correlationId = ++_correlationId;
-                    var requestWriter = request.messageDescriptor.GetRequestWriter();
+                var bufferWriter = new MemoryBufferWriter<byte>();
+                var correlationId = ++_correlationId;
+                var requestWriter = request.MessageDescriptor.GetRequestWriter();
 
-                    _requestQueue.Enqueue((correlationId, request.messageDescriptor, request.tcs));
+                _requestQueue.Enqueue(request.WithNewContext(correlationId));
 
-                    requestWriter.WriteMessage(request, bufferWriter);
+                requestWriter.WriteMessage(request, bufferWriter);
 
-                    using var kafkaRequest = new KafkaRequest(bufferWriter, request.messageDescriptor.ApiKey, request.messageDescriptor.ApiVersion, correlationId);
+                using var kafkaRequest = new KafkaRequest(bufferWriter, request.MessageDescriptor.ApiKey, request.MessageDescriptor.ApiVersion, correlationId);
 
-                    await writer.WriteAsync(_requestWriter, kafkaRequest, cancellationToken);
-                }
+                await writer.WriteAsync(_requestWriter, kafkaRequest, cancellationToken);
             }
         }
 
@@ -103,28 +99,48 @@ namespace Bedrock.Framework.Protocols.Kafka
 
                 using var kafkaResponse = result.Message;
 
-                var hasRequestInFlight = _requestQueue.TryDequeue(
-                    out (int correlationId, IKafkaMessageDescriptor messageDescriptor, TaskCompletionSource<object> tcs) inflightRequestContext);
+                var hasRequestInFlight = _requestQueue.TryDequeue(out RequestContext<int> requestContext);
 
                 Debug.Assert(hasRequestInFlight, "Protocol Error: received unexpected message from server.");
 
                 try
                 {
-                    if (kafkaResponse.CorrelationId != inflightRequestContext.correlationId)
+                    if (kafkaResponse.CorrelationId != requestContext.Item)
                     {
-                        inflightRequestContext.tcs.SetException(new Exception("Protocol Exception: correlation ID mis-match."));
+                        requestContext.ResponseCompletionSource.SetException(new Exception("Protocol Exception: correlation ID mis-match."));
 
                         continue;
                     }
 
-                    var responseReader = inflightRequestContext.messageDescriptor.GetResponseReader();
+                    var responseReader = requestContext.MessageDescriptor.GetResponseReader();
 
-                    inflightRequestContext.tcs.SetResult(responseReader.ReadMessage(kafkaResponse.ResponseMessage));
+                    requestContext.ResponseCompletionSource.SetResult(responseReader.ReadMessage(kafkaResponse.ResponseMessage));
                 }
                 finally
                 {
                     reader.Advance();
                 }
+            }
+        }
+
+        private readonly struct RequestContext<T>
+        {
+            public RequestContext(T item, IKafkaMessageDescriptor messageDescriptor, TaskCompletionSource<object> responseCompletionSource)
+            {
+                Item = item;
+                MessageDescriptor = messageDescriptor;
+                ResponseCompletionSource = responseCompletionSource;
+            }
+
+            public readonly T Item;
+
+            public readonly IKafkaMessageDescriptor MessageDescriptor;
+
+            public readonly TaskCompletionSource<object> ResponseCompletionSource;
+
+            public RequestContext<TOut> WithNewContext<TOut>(TOut item)
+            {
+                return new RequestContext<TOut>(item, this.MessageDescriptor, this.ResponseCompletionSource);
             }
         }
     }
