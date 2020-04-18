@@ -9,6 +9,7 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryType>git</RepositoryType>
     <PackageTags>cloud microservice networking sockets websockets tcp</PackageTags>
+    <LangVersion>latest</LangVersion>
   </PropertyGroup>
   <ItemGroup Condition="$(IsPackable) == 'true'">
     <PackageReference Include="Nerdbank.GitVersioning">
